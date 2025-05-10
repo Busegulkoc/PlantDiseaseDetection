@@ -1,0 +1,72 @@
+# Visual Studio ve .NET çıktıları
+[Bb]in/
+[Oo]bj/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+*.dbmdl
+*.dbproj.schemaview
+*.pfx
+*.publishsettings
+*.log
+
+# Python çıktıları ve sanal ortamlar
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyc
+*.pyo
+*.pyd
+*.env/
+env/
+venv/
+ENV/
+VENV/
+.venv/
+*.sqlite3
+
+# SQLite veritabanı dosyaları
+*.sqlite
+*.sqlite3
+
+# Test ve coverage çıktıları
+[Tt]est[Rr]esult*/
+coverage*.json
+coverage*.xml
+coverage*.info
+*.coverage
+*.coveragexml
+
+# Paketler ve bağımlılıklar
+node_modules/
+*.nupkg
+*.snupkg
+artifacts/
+*.nuget.props
+*.nuget.targets
+
+# Diğer IDE ve araç dosyaları
+.idea/
+*.vscode/
+*.DS_Store
+*.swp
+*.bak
+*.tmp
+
+# Yayınlama ve derleme çıktıları
+publish/
+*.appx
+*.appxbundle
+*.appxupload
+
+# Kişisel ayar dosyaları
+*.DotSettings.user
+
+# Python virtual environment (örnek)
+ModelAPI/venv/
+
+# Not: Gerekirse wwwroot/ ve diğer özel klasörler eklenebilir.
