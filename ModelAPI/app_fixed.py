@@ -30,7 +30,7 @@ async def predict(file: UploadFile = File(None), imageFile: UploadFile = File(No
         upload_file = file if file is not None else imageFile
         
         if upload_file is None:
-            return {"error": "No file provided. Please upload an image file using 'file' or 'imageFile' parameter."}
+            return {"error": "No file provided. Please upload an image file using 'file' or 'imageFile' parameter.", "predictions": []}
         
         # Read the image file
         contents = await upload_file.read()
@@ -41,12 +41,13 @@ async def predict(file: UploadFile = File(None), imageFile: UploadFile = File(No
             logger.info(f"Successfully loaded image: {upload_file.filename}, size: {image.size}, mode: {image.mode}")
         except Exception as img_error:
             logger.error(f"Error loading image: {str(img_error)}")
-            return {"error": f"Could not load image: {str(img_error)}"}
+            return {"error": f"Could not load image: {str(img_error)}", "predictions": []}
         
         # Perform prediction with explicit image format
         results = model.predict(source=image, imgsz=640, verbose=False)
         logger.info(f"Prediction completed with result type: {type(results)}")
-          # Define a helper function to convert numpy arrays to Python native types
+        
+        # Define a helper function to convert numpy arrays to Python native types
         def convert_numpy_to_python(obj):
             # Handle numpy arrays
             if isinstance(obj, np.ndarray):
@@ -90,7 +91,9 @@ async def predict(file: UploadFile = File(None), imageFile: UploadFile = File(No
             return {"predictions": []}
             
         # Log the result structure to help debugging
-        logger.info(f"Result structure: {dir(results[0])}")        # For classification models, results[0].probs contains class probabilities
+        logger.info(f"Result structure: {dir(results[0])}")
+        
+        # For classification models, results[0].probs contains class probabilities
         if hasattr(results[0], "probs") and results[0].probs is not None:
             logger.info("Processing as classification model")
             
@@ -122,10 +125,10 @@ async def predict(file: UploadFile = File(None), imageFile: UploadFile = File(No
                     return {"predictions": predictions}
                 except Exception as prob_error:
                     logger.error(f"Error processing probabilities: {str(prob_error)}")
-                    return {"error": f"Error processing probabilities: {str(prob_error)}"}
+                    return {"error": f"Error processing probabilities: {str(prob_error)}", "predictions": []}
             except Exception as class_error:
                 logger.error(f"Error processing classification: {str(class_error)}")
-                return {"error": f"Error processing classification: {str(class_error)}"}
+                return {"error": f"Error processing classification: {str(class_error)}", "predictions": []}
 
         # For detection models, return detected classes with their confidence
         logger.info("Processing as detection model")
@@ -158,7 +161,8 @@ async def predict(file: UploadFile = File(None), imageFile: UploadFile = File(No
                             scores[idx] = conf_val
                 except Exception as box_error:
                     logger.error(f"Error processing boxes: {str(box_error)}")
-              # Build the predictions response
+                    
+            # Build the predictions response
             predictions = []
             for class_id, class_name in class_names.items():
                 try:
@@ -172,8 +176,8 @@ async def predict(file: UploadFile = File(None), imageFile: UploadFile = File(No
             return {"predictions": predictions}
         except Exception as det_error:
             logger.error(f"Error in detection processing: {str(det_error)}")
-            return {"error": f"Error in detection processing: {str(det_error)}"}
-
+            return {"error": f"Error in detection processing: {str(det_error)}", "predictions": []}
+            
     except Exception as e:
         import traceback
         import sys
@@ -183,15 +187,29 @@ async def predict(file: UploadFile = File(None), imageFile: UploadFile = File(No
         
         logger.error(f"Error in prediction: {error_type}: {str(e)}\n{tb}")
         
-        # Check if this is related to JSON serialization
+        # Check if this is related to JSON serialization or numpy arrays
         if "Object of type" in str(e) and "is not JSON serializable" in str(e):
-            return {
-                "error": f"JSON serialization error: {str(e)}. Try updating the convert_numpy_to_python function.",
-                "error_type": error_type
-            }
+            # Try to return a safe serializable response
+            try:
+                if 'numpy' in str(e):
+                    # If numpy-related error, attempt to provide a better error message
+                    return {
+                        "error": f"JSON serialization error with NumPy data: {str(e)}",
+                        "error_type": error_type,
+                        "predictions": []  # Ensure we always return an empty predictions array
+                    }
+                return {
+                    "error": f"JSON serialization error: {str(e)}",
+                    "error_type": error_type,
+                    "predictions": []
+                }
+            except:
+                # If all else fails, return a simple error
+                return {"error": "Failed to serialize response", "predictions": []}
         
         return {
             "error": str(e),
             "error_type": error_type,
-            "traceback": tb
+            "traceback": tb,
+            "predictions": []  # Always include an empty predictions array for consistent response structure
         }

@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  # Python ML API service
+  model-api:
+    build: 
+      context: ./ModelAPI
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - model-data:/app/models
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # ASP.NET Core backend service
+  backend:
+    build:
+      context: ./FruitDiseaseDetection
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - model-api
+    environment:
+      - PREDICTION_API_URL=http://model-api:8000
+      - ASPNETCORE_URLS=http://0.0.0.0:80
+    restart: unless-stopped
+    networks:
+      - app-network
+
+volumes:
+  model-data:
+
+networks:
+  app-network:
+    driver: bridge

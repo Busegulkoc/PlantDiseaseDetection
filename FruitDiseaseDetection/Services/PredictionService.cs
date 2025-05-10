@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using System.IO;
 using System;
 using System.Text.Json;
+using System.Collections.Generic;
 
 namespace FruitDiseaseDetection.Services
 {
@@ -16,7 +17,7 @@ namespace FruitDiseaseDetection.Services
             _httpClient = httpClient;
         }
 
-        public async Task<object> PredictAsync(byte[] imageBytes, string fileName)
+        public async Task<PredictionResult> PredictAsync(byte[] imageBytes, string fileName)
         {
             try
             {
@@ -24,20 +25,41 @@ namespace FruitDiseaseDetection.Services
                 {
                     var fileContent = new ByteArrayContent(imageBytes);
                     fileContent.Headers.ContentType = new MediaTypeHeaderValue("image/jpeg");
-                    content.Add(fileContent, "file", fileName);
+                    // Change parameter name from 'file' to match what your API expects
+                    content.Add(fileContent, "file", fileName);  // Keep it as 'file' to match the FastAPI endpoint
 
-                    var response = await _httpClient.PostAsync("http://127.0.0.1:8000/predict", content);
+                    // Get the API URL from environment variable or use default
+                    var apiUrl = Environment.GetEnvironmentVariable("PREDICTION_API_URL") ?? "http://127.0.0.1:8000";
+                    var response = await _httpClient.PostAsync($"{apiUrl}/predict", content);
                     response.EnsureSuccessStatusCode();
                     var result = await response.Content.ReadAsStringAsync();
 
-                    // JSON stringini nesne olarak dön
-                    return JsonSerializer.Deserialize<object>(result);
+                    // Parse the JSON response
+                    var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                    var predictionResult = JsonSerializer.Deserialize<PredictionResult>(result, options);
+                    
+                    return predictionResult ?? new PredictionResult 
+                    { 
+                        Error = "Failed to parse prediction result" 
+                    };
                 }
             }
             catch (Exception ex)
             {
-                return new { error = "Error" };
+                return new PredictionResult { Error = ex.Message };
             }
         }
+    }
+
+    public class PredictionResult
+    {
+        public List<PredictionItem> Predictions { get; set; } = new List<PredictionItem>();
+        public string Error { get; set; }
+    }
+
+    public class PredictionItem
+    {
+        public string Class { get; set; }
+        public float Probability { get; set; }
     }
 }
