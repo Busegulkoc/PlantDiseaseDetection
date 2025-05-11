@@ -29,7 +29,7 @@ builder.Services.AddEndpointsApiExplorer();
 
 builder.Services.AddOpenApi();
 
-builder.WebHost.UseUrls("http://localhost:80");
+builder.WebHost.UseUrls("http://0.0.0.0:80");
 
 builder.Services.AddDbContext<FruitDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));

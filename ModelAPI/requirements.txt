@@ -1,5 +1,8 @@
 fastapi
 uvicorn
-torch
-ultralytics
+python-multipart
 pillow
+ultralytics
+torch
+gdown
+opencv-python-headless
