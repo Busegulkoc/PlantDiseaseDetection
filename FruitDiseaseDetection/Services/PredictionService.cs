@@ -29,7 +29,7 @@ namespace FruitDiseaseDetection.Services
                     content.Add(fileContent, "file", fileName);  // Keep it as 'file' to match the FastAPI endpoint
 
                     // Get the API URL from environment variable or use default
-                    var apiUrl = Environment.GetEnvironmentVariable("PREDICTION_API_URL") ?? "http://127.0.0.1:8000";
+                    var apiUrl = "https://206e-176-220-163-163.ngrok-free.app";
                     var response = await _httpClient.PostAsync($"{apiUrl}/predict", content);
                     response.EnsureSuccessStatusCode();
                     var result = await response.Content.ReadAsStringAsync();

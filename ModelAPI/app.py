@@ -1,11 +1,14 @@
 from fastapi import FastAPI, File, UploadFile
-import torch
 from ultralytics import YOLO
 from io import BytesIO
 from PIL import Image
 from fastapi.middleware.cors import CORSMiddleware
-import numpy as np
 import logging
+import traceback
+import numpy as np
+import torch
+import tempfile
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -13,185 +16,208 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
-model = YOLO("best.pt")  # Model dosyanın adını buraya yaz
+
+# Ensure the model path is correct and the model file is accessible in the Docker container.
+try:
+    model = YOLO("best.pt")
+    logger.info("YOLO model loaded successfully.")
+    
+    # Log model information
+    model_type = model.task if hasattr(model, 'task') else type(model).__name__
+    logger.info(f"Model type: {model_type}")
+except Exception as model_load_error:
+    logger.error(f"Failed to load YOLO model: {model_load_error}", exc_info=True)
+    model = None
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Tüm kaynaklara izin ver
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Helper function to convert any numpy values to Python native types
+def convert_numpy_to_python(obj):
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, np.generic):
+        return obj.item()  # Convert numpy scalars to Python scalars
+    elif isinstance(obj, dict):
+        return {k: convert_numpy_to_python(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_to_python(item) for item in obj]
+    else:
+        return obj
+
 @app.post("/predict")
 async def predict(file: UploadFile = File(None), imageFile: UploadFile = File(None)):
+    if model is None:
+        logger.error("Model not loaded, cannot predict.")
+        return {"predictions": [], "error": "Model not loaded."}
+        
     try:
-        # Use either file or imageFile, whichever is provided
         upload_file = file if file is not None else imageFile
         
         if upload_file is None:
-            return {"error": "No file provided. Please upload an image file using 'file' or 'imageFile' parameter."}
+            logger.warning("No file provided in the request.")
+            return {"predictions": [], "error": "No file provided. Please upload an image file using 'file' or 'imageFile' parameter."}
         
-        # Read the image file
         contents = await upload_file.read()
         
-        # Open as PIL Image directly, ensuring it's in RGB mode
-        try:
-            image = Image.open(BytesIO(contents)).convert('RGB')
-            logger.info(f"Successfully loaded image: {upload_file.filename}, size: {image.size}, mode: {image.mode}")
-        except Exception as img_error:
-            logger.error(f"Error loading image: {str(img_error)}")
-            return {"error": f"Could not load image: {str(img_error)}"}
+        # For classification models, we'll save the image to a temporary file
+        # This is a workaround for the issue with PIL/numpy conversion in YOLO classify
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
+            temp_file.write(contents)
+            temp_file_path = temp_file.name
         
-        # Perform prediction with explicit image format
-        results = model.predict(source=image, imgsz=640, verbose=False)
-        logger.info(f"Prediction completed with result type: {type(results)}")
-          # Define a helper function to convert numpy arrays to Python native types
-        def convert_numpy_to_python(obj):
-            # Handle numpy arrays
-            if isinstance(obj, np.ndarray):
-                return obj.tolist()
-            # Handle numpy scalar types
-            elif np.isscalar(obj) and isinstance(obj, (np.number, np.bool_)):
-                if isinstance(obj, (np.integer, np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64)):
-                    return int(obj)
-                elif isinstance(obj, (np.floating, np.float_, np.float16, np.float32, np.float64)):
-                    return float(obj)
-                elif isinstance(obj, (np.bool_, np.bool8)):
-                    return bool(obj)
-                else:
-                    return obj.item()  # Convert any other numpy scalar to Python scalar
-            # Handle dictionaries
-            elif isinstance(obj, dict):
-                return {k: convert_numpy_to_python(v) for k, v in obj.items()}
-            # Handle lists and tuples
-            elif isinstance(obj, (list, tuple)):
-                return [convert_numpy_to_python(i) for i in obj]
-            # Handle objects with a __dict__ attribute (custom objects)
-            elif hasattr(obj, "__dict__"):
-                try:
-                    return convert_numpy_to_python(obj.__dict__)
-                except:
-                    # If converting __dict__ fails, return a string representation
-                    return str(obj)
-            # Handle torch tensors
-            elif hasattr(obj, "cpu") and hasattr(obj, "numpy"):  # Likely a torch tensor
-                try:
-                    return convert_numpy_to_python(obj.cpu().numpy())
-                except:
-                    return str(obj)
-            # Return everything else as is
-            else:
-                return obj
-
-        # Extract and process the YOLO results
-        if not results or len(results) == 0:
-            logger.warning("No results returned from model")
-            return {"predictions": []}
-            
-        # Log the result structure to help debugging
-        logger.info(f"Result structure: {dir(results[0])}")        # For classification models, results[0].probs contains class probabilities
-        if hasattr(results[0], "probs") and results[0].probs is not None:
-            logger.info("Processing as classification model")
-            
-            try:
-                # Get class names
-                if hasattr(results[0], "names") and results[0].names:
-                    class_names = convert_numpy_to_python(results[0].names)
-                else:
-                    logger.warning("No class names found, using indices")
-                    class_names = {i: f"Class {i}" for i in range(10)}  # Fallback
-
-                # Extract probabilities safely
-                try:
-                    if hasattr(results[0].probs, "data"):
-                        probs_data = results[0].probs.data
-                        if isinstance(probs_data, torch.Tensor):
-                            probs_data = probs_data.cpu().numpy()
-                        probs = convert_numpy_to_python(probs_data)
-                    else:
-                        probs = convert_numpy_to_python(results[0].probs)
-                    
-                    # Build response with class names and probabilities
-                    predictions = []
-                    for i, (class_id, name) in enumerate(class_names.items()):
-                        if i < len(probs):
-                            predictions.append({"class": str(name), "probability": float(probs[i])})
-                    
-                    logger.info(f"Returning {len(predictions)} classification predictions")
-                    return {"predictions": predictions}
-                except Exception as prob_error:
-                    logger.error(f"Error processing probabilities: {str(prob_error)}")
-                    return {"error": f"Error processing probabilities: {str(prob_error)}"}
-            except Exception as class_error:
-                logger.error(f"Error processing classification: {str(class_error)}")
-                return {"error": f"Error processing classification: {str(class_error)}"}
-
-        # For detection models, return detected classes with their confidence
-        logger.info("Processing as detection model")
         try:
-            # Get class names
-            if hasattr(results[0], "names") and results[0].names:
-                class_names = convert_numpy_to_python(results[0].names)
-            else:
-                logger.warning("No class names found, using indices")
-                class_names = {i: f"Class {i}" for i in range(10)}  # Fallback
+            # Log the temp file path
+            logger.info(f"Saved image to temporary file: {temp_file_path}")
+            
+            # Open image just to log the dimensions and format
+            with Image.open(BytesIO(contents)) as img:
+                logger.info(f"Successfully loaded image: {upload_file.filename}, size: {img.size}, mode: {img.mode}")
+            
+            # Call predict with the file path instead of the PIL Image object
+            results = model.predict(source=temp_file_path, imgsz=640, verbose=False)
+            logger.info(f"Prediction completed. Results type: {type(results)}")
+            
+            # Delete the temporary file after prediction
+            try:
+                os.unlink(temp_file_path)
+                logger.info(f"Deleted temporary file: {temp_file_path}")
+            except Exception as delete_error:
+                logger.warning(f"Failed to delete temporary file: {delete_error}")
                 
-            # Initialize scores for all classes
-            num_classes = len(class_names)
-            scores = [0.0] * num_classes
-            
-            # Extract detection boxes and confidences
-            if hasattr(results[0], "boxes") and results[0].boxes is not None:
-                try:
-                    boxes_cls = convert_numpy_to_python(results[0].boxes.cls) if hasattr(results[0].boxes, "cls") else []
-                    boxes_conf = convert_numpy_to_python(results[0].boxes.conf) if hasattr(results[0].boxes, "conf") else []
+        except Exception as predict_error:
+            # If prediction fails, clean up and log error
+            logger.error(f"Prediction error: {predict_error}", exc_info=True)
+            try:
+                os.unlink(temp_file_path)
+                logger.info(f"Deleted temporary file after error: {temp_file_path}")
+            except:
+                pass
+            return {"predictions": [], "error": f"Error during prediction: {str(predict_error)}"}
+
+        # Process results
+        if not results:
+            logger.info("Model returned no results.")
+            return {"predictions": [], "error": "Model returned no results."}
+
+        processed_predictions = []
+        
+        # Determine if it's a classification model
+        is_classification = hasattr(model, 'task') and model.task == 'classify'
+        logger.info(f"Processing results for model task type: {'classification' if is_classification else 'detection'}")
+        
+        # Log the structure of the results object
+        for i, result in enumerate(results):
+            logger.info(f"Result {i} type: {type(result)}")
+            logger.info(f"Result {i} attributes: {dir(result)}")
+        
+        # Process results based on model type
+        for result_item in results:
+            if is_classification or (hasattr(result_item, 'probs') and result_item.probs is not None):
+                # Handle classification results
+                logger.info("Processing classification results")
+                
+                if hasattr(result_item, 'probs') and result_item.probs is not None:
+                    logger.info(f"Probs attributes: {dir(result_item.probs)}")
+                    names = result_item.names
+                    logger.info(f"Class names: {names}")
                     
-                    logger.info(f"Found {len(boxes_cls)} boxes with classes: {boxes_cls}")
-                    logger.info(f"Confidences: {boxes_conf}")
+                    # Different ways to access probabilities based on the structure
+                    if hasattr(result_item.probs, 'top5'):
+                        # Access top 5 predictions
+                        logger.info("Using top5 method")
+                        top5_indices = result_item.probs.top5.cpu().numpy().tolist() if hasattr(result_item.probs.top5, 'cpu') else convert_numpy_to_python(result_item.probs.top5)
+                        top5_conf = result_item.probs.top5conf.cpu().numpy().tolist() if hasattr(result_item.probs.top5conf, 'cpu') else convert_numpy_to_python(result_item.probs.top5conf)
+                        
+                        logger.info(f"Top 5 indices: {top5_indices}")
+                        logger.info(f"Top 5 confidences: {top5_conf}")
+                        
+                        for idx, conf in zip(top5_indices, top5_conf):
+                            if idx in names:
+                                processed_predictions.append({
+                                    "class": names[idx],
+                                    "probability": float(conf)
+                                })
+                    elif hasattr(result_item.probs, 'data'):
+                        # Access all class probabilities
+                        logger.info("Using data method")
+                        probs_data = result_item.probs.data
+                        
+                        # Convert to Python list depending on data type
+                        if hasattr(probs_data, 'cpu'):
+                            probs_list = probs_data.cpu().numpy().tolist()
+                        else:
+                            probs_list = convert_numpy_to_python(probs_data)
+                        
+                        logger.info(f"Probabilities length: {len(probs_list)}")
+                        
+                        # Add each class prediction
+                        for i, prob in enumerate(probs_list):
+                            if i in names:
+                                processed_predictions.append({
+                                    "class": names[i],
+                                    "probability": float(prob)
+                                })
+                    else:
+                        # Fallback method - try to access probs directly
+                        logger.warning("Using fallback method for probabilities")
+                        try:
+                            # Try different attributes that might contain probabilities
+                            for attr_name in dir(result_item.probs):
+                                if attr_name.startswith("__"):
+                                    continue
+                                    
+                                logger.info(f"Checking attribute: {attr_name}")
+                                try:
+                                    attr_value = getattr(result_item.probs, attr_name)
+                                    if isinstance(attr_value, (torch.Tensor, np.ndarray, list)) and not callable(attr_value):
+                                        logger.info(f"Found potential probability data in {attr_name}")
+                                except:
+                                    pass
+                        except Exception as prob_error:
+                            logger.error(f"Error accessing probabilities: {prob_error}")
+            elif hasattr(result_item, 'boxes') and result_item.boxes is not None:
+                # Handle object detection results
+                logger.info("Processing detection results")
+                boxes = result_item.boxes
+                names = result_item.names
+                
+                for i in range(len(boxes.cls)):
+                    class_id = int(boxes.cls[i].item())
+                    confidence = float(boxes.conf[i].item())
                     
-                    # Update scores with detection confidences
-                    for cls, conf in zip(boxes_cls, boxes_conf):
-                        idx = int(cls)
-                        conf_val = float(conf)
-                        if idx < len(scores) and conf_val > scores[idx]:
-                            scores[idx] = conf_val
-                except Exception as box_error:
-                    logger.error(f"Error processing boxes: {str(box_error)}")
-              # Build the predictions response
-            predictions = []
-            for class_id, class_name in class_names.items():
-                try:
-                    score_idx = int(class_id) if isinstance(class_id, (int, str)) else 0
-                    score = scores[score_idx] if score_idx < len(scores) else 0.0
-                    predictions.append({"class": str(class_name), "probability": float(score)})
-                except Exception as pred_error:
-                    logger.error(f"Error processing prediction for class {class_id}: {str(pred_error)}")
-            
-            logger.info(f"Returning {len(predictions)} detection predictions")
-            return {"predictions": predictions}
-        except Exception as det_error:
-            logger.error(f"Error in detection processing: {str(det_error)}")
-            return {"error": f"Error in detection processing: {str(det_error)}"}
+                    box_coords = boxes.xyxyn[i].cpu().numpy().tolist() if hasattr(boxes.xyxyn[i], 'cpu') else convert_numpy_to_python(boxes.xyxyn[i])
+                    
+                    prediction_item = {
+                        "class": names[class_id],
+                        "confidence": confidence,
+                        "box": box_coords
+                    }
+                    processed_predictions.append(prediction_item)
+            else:
+                logger.warning(f"Unrecognized result type or missing expected attributes")
+
+        # Final safety check to ensure all predictions are JSON serializable
+        processed_predictions = convert_numpy_to_python(processed_predictions)
+        
+        logger.info(f"Successfully processed {len(processed_predictions)} predictions.")
+        return {"predictions": processed_predictions, "error": None}
 
     except Exception as e:
-        import traceback
-        import sys
-        
         tb = traceback.format_exc()
         error_type = type(e).__name__
-        
-        logger.error(f"Error in prediction: {error_type}: {str(e)}\n{tb}")
-        
-        # Check if this is related to JSON serialization
-        if "Object of type" in str(e) and "is not JSON serializable" in str(e):
-            return {
-                "error": f"JSON serialization error: {str(e)}. Try updating the convert_numpy_to_python function.",
-                "error_type": error_type
-            }
-        
+        logger.error(f"Error in prediction endpoint: {error_type}: {str(e)}\nTraceback: {tb}")
         return {
-            "error": str(e),
-            "error_type": error_type,
-            "traceback": tb
+            "predictions": [], 
+            "error": f"{error_type}: {str(e)}"
         }
+
+@app.get("/ping")
+async def ping():
+    """Health check endpoint"""
+    return {"status": "ok", "model_loaded": model is not None}
